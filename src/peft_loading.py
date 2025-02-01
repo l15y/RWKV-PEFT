@@ -83,15 +83,24 @@ def load_peft_model(args: TrainingArgs):
                             f'  Bone additionally training parameter {pname}')
                         param.requires_grad = True
                 break
-
+    is_quanted=False
     if len(args.load_model) == 0 or args.my_pile_stage == 1:  # shall we build the initial weights?
         init_weight_name = f"{args.proj_dir}/rwkv-init.pth"
         generate_init_weight(model, init_weight_name)  # save initial weights
         args.load_model = init_weight_name
     else:
-        rank_zero_info(f"########## Loading {args.load_model}... ##########")
-        model.load_state_dict(torch.load(
-            args.load_model, map_location="cpu", weights_only=True), strict=(not freeze))
+        if args.quant != 'none':
+            quant_model_path = f"{args.proj_dir}/rwkv-quant-{args.quant}.pth"
+            try:
+                rank_zero_info(f"########## Loading quantized model ##########")
+                model.load_state_dict(torch.load(quant_model_path, map_location="cpu", weights_only=True), strict=(not freeze))
+                is_quanted=True
+                rank_zero_info(f"########## Load quantized model success ##########")
+            except:
+                rank_zero_info(f"########## Load quantized model failed ##########")
+                rank_zero_info(f"########## Loading {args.load_model}... ##########")
+                model.load_state_dict(torch.load(
+                    args.load_model, map_location="cpu", weights_only=True), strict=(not freeze))
 
     # Load peft checkpoint
     # multi-GPU training
@@ -135,10 +144,15 @@ def load_peft_model(args: TrainingArgs):
                     m.pissa_load(
                         pissa_init[f'{name}.init_lora_A'], pissa_init[f'{name}.init_lora_B'])
 
-    if args.quant != 'none':
+    if args.quant != 'none' and not is_quanted:
         rank_zero_info(f"########## Quant... ##########")
         for name, m in model.named_modules():
             if hasattr(m, "quant") and callable(getattr(m, "quant")):
                 m.quant(args.quant)
+        
+        # Save quantized model
+        quant_model_path = f"{args.proj_dir}/rwkv-quant-{args.quant}.pth"
+        rank_zero_info(f"########## Saving quantized model to {quant_model_path} ##########")
+        torch.save(model.state_dict(), quant_model_path)
 
     return args, model
