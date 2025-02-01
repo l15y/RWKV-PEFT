@@ -5,6 +5,7 @@ from src.args_type import TrainingArgs
 from lightning_utilities.core.rank_zero import rank_zero_info
 from src.trainer import generate_init_weight
 from src.rwkvLinear import LORA_CONFIG
+import safetensors.torch
 
 def load_peft_model(args: TrainingArgs):
     freeze = False
@@ -27,6 +28,19 @@ def load_peft_model(args: TrainingArgs):
 
     model = RWKV(args)
     print(model)
+    
+    is_quanted=False
+    if (args.train_type == 'state' or args.state_tune)and args.quant != 'none':
+        try:
+            rank_zero_info(f"########## Loading quantized model ##########")
+
+            is_quanted=True
+            quant_model_path = f"{args.proj_dir}/rwkv-quant-{args.quant}.st"
+            state_dict = safetensors.torch.load_file(quant_model_path)
+            model.load_state_dict(state_dict)
+            rank_zero_info(f"########## Load quantized model success ##########")
+        except:
+            rank_zero_info(f"########## Load quantized model failed ##########")
     if args.train_type == 'state':
         args.state_tune = True
 
@@ -83,24 +97,17 @@ def load_peft_model(args: TrainingArgs):
                             f'  Bone additionally training parameter {pname}')
                         param.requires_grad = True
                 break
-    is_quanted=False
+
     if len(args.load_model) == 0 or args.my_pile_stage == 1:  # shall we build the initial weights?
         init_weight_name = f"{args.proj_dir}/rwkv-init.pth"
         generate_init_weight(model, init_weight_name)  # save initial weights
         args.load_model = init_weight_name
     else:
-        if args.quant != 'none':
-            quant_model_path = f"{args.proj_dir}/rwkv-quant-{args.quant}.pth"
-            try:
-                rank_zero_info(f"########## Loading quantized model ##########")
-                model.load_state_dict(torch.load(quant_model_path, map_location="cpu", weights_only=True), strict=(not freeze))
-                is_quanted=True
-                rank_zero_info(f"########## Load quantized model success ##########")
-            except:
-                rank_zero_info(f"########## Load quantized model failed ##########")
-                rank_zero_info(f"########## Loading {args.load_model}... ##########")
-                model.load_state_dict(torch.load(
-                    args.load_model, map_location="cpu", weights_only=True), strict=(not freeze))
+        if not is_quanted:
+            rank_zero_info(f"########## Loading {args.load_model}... ##########")
+            model.load_state_dict(torch.load(
+                args.load_model, map_location="cpu", weights_only=True), strict=(not freeze))
+                # print_model_parameters(model)
 
     # Load peft checkpoint
     # multi-GPU training
@@ -151,8 +158,9 @@ def load_peft_model(args: TrainingArgs):
                 m.quant(args.quant)
         
         # Save quantized model
-        quant_model_path = f"{args.proj_dir}/rwkv-quant-{args.quant}.pth"
+        quant_model_path = f"{args.proj_dir}/rwkv-quant-{args.quant}.st"
         rank_zero_info(f"########## Saving quantized model to {quant_model_path} ##########")
-        torch.save(model.state_dict(), quant_model_path)
+
+        safetensors.torch.save_file(model.state_dict(), quant_model_path)
 
     return args, model
